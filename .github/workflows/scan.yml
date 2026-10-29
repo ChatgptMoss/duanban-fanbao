@@ -3,9 +3,9 @@ name: 断板反包
 on:
   schedule:
     # GitHub cron 用 UTC，+8 才是北京时间
-    - cron: '30 0 * * 1-5'   # 08:30 → 盘前名单
-    - cron: '20 1 * * 1-5'   # 09:20 → 竞价判定（脚本会自己等到 9:25 撮合完成）
-    - cron: '38 1 * * 1-5'   # 09:38 → 开盘承接（10 分钟量能 + 真实翻红）
+    - cron: '30 13 * * 1-5'  # 21:30 → 断板反包池（晚上算，不抢时间，可充分重试）
+    - cron: '25 1 * * 1-5'   # 09:25 → 竞价判定（只读现成名单，一次请求）
+    - cron: '40 1 * * 1-5'   # 09:40 → 承接判定
   workflow_dispatch:
     inputs:
       stage:
@@ -23,13 +23,12 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
+      # 不装 setup-python：只用标准库，runner 自带 python3.12，
+      # 竞价那次能省 5–10 秒启动时间
       - name: 执行
         env:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
@@ -38,14 +37,14 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           MAIL_TO:   ${{ secrets.MAIL_TO }}
-        run: python run.py ${{ github.event.inputs.stage || 'auto' }}
+        run: python3 run.py ${{ github.event.inputs.stage || 'auto' }}
 
       - name: 提交结果
         if: always()
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add out/ || true
-          git diff --cached --quiet || git commit -m "run: $(TZ=Asia/Shanghai date +%m-%d\ %H:%M)"
+          git add -A out/ || true
+          git diff --cached --quiet || git commit -q -m "run: $(TZ=Asia/Shanghai date +%m-%d\ %H:%M)"
           git pull --rebase --quiet || true
-          git push || true
+          git push -q || true

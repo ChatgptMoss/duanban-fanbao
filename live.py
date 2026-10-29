@@ -58,14 +58,15 @@ def http_get(url, headers=None, retries=3, timeout=15, encoding="gbk"):
     raise last
 
 
-def tx_quote(codes):
-    """腾讯批量行情。返回 code -> dict"""
+def tx_quote(codes, retries=2, timeout=10):
+    """腾讯批量行情。返回 code -> dict。
+    竞价阶段只有 16 只左右，一次请求就能拿完，重试次数压到 2 次，最坏 3 秒内出结果。"""
     out = {}
     for i in range(0, len(codes), 40):
         batch = codes[i:i + 40]
         q = ",".join(("sh" if c.startswith("6") else "sz") + c for c in batch)
         try:
-            txt = http_get(f"https://qt.gtimg.cn/q={q}")
+            txt = http_get(f"https://qt.gtimg.cn/q={q}", retries=retries, timeout=timeout)
         except Exception:
             continue
         for line in txt.split(";"):
@@ -161,15 +162,16 @@ def check_window(q, lo, hi):
 
 # ---------------------------------------------------------------- auction
 def wait_for_auction_close():
-    """9:15–9:25 之间被触发时，先等到 9:25:20 再取数。
-    撮合前拿到的只是未成交的意向量，竞价额会偏小甚至为 0，判断会失真。"""
+    """等到 9:25:20 再取数。撮合前拿到的只是未成交的意向量，竞价额会偏小甚至为 0；
+    9:30 之后 f[37] 已混入开盘后的成交量，竞价额又会偏大。所以取数窗口很窄。"""
     t = bj_now()
-    if t.hour == 9 and 15 <= t.minute < 25:
-        target = t.replace(minute=25, second=20, microsecond=0)
-        wait = (target - t).total_seconds()
-        if 0 < wait <= 700:
-            print(f"等待集合竞价撮合，{wait:.0f} 秒后取数…", flush=True)
-            time.sleep(wait)
+    if t.hour != 9:
+        return
+    target = t.replace(minute=25, second=20, microsecond=0)
+    wait = (target - t).total_seconds()
+    if 0 < wait <= 700:
+        print(f"等待集合竞价撮合，{wait:.0f} 秒后取数…", flush=True)
+        time.sleep(wait)
 
 
 def run_auction():

@@ -38,6 +38,11 @@ HDR_TX = {
                   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
     "Referer": "https://gu.qq.com/",
 }
+HDR_SINA = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Referer": "https://finance.sina.com.cn/",
+}
 
 
 def http_get(url, headers=None, retries=3, timeout=25, encoding="utf-8"):
@@ -92,16 +97,23 @@ def trading_days(n=2):
     return []
 
 
-def resolve_days():
-    """返回 (当日日期, 当日data, 前一日日期, 前一日data)"""
-    ds = trading_days(2)
-    if len(ds) < 2:
-        return None
-    d1, d2 = ds[0], ds[1]
-    p1, p2 = _pool("ZT", d1), _pool("ZT", d2)
-    if not (p1 and p2):
-        return None
-    return d1, p1, d2, p2
+def resolve_days(retry=2):
+    """返回 (当日日期, 当日data, 前一日日期, 前一日data)
+
+    晚上跑不抢时间，允许重试：接口偶发返回空数据或未更新完的涨停池，
+    若直接把空名单推给次日竞价，整条链路就废了。
+    """
+    for attempt in range(retry + 1):
+        ds = trading_days(2)
+        if len(ds) >= 2:
+            d1, d2 = ds[0], ds[1]
+            p1, p2 = _pool("ZT", d1), _pool("ZT", d2)
+            # tc=涨停家数。少于 5 家基本可判定为数据未更新完整
+            if p1 and p2 and (p1.get("tc") or 0) > 5:
+                return d1, p1, d2, p2
+        if attempt < retry:
+            time.sleep(20)
+    return None
 
 
 def is_main_board(code):
@@ -160,6 +172,25 @@ def eastmoney_fund(codes):
                 time.sleep(1.0)
                 continue
         time.sleep(0.4)
+    return out
+
+
+def sina_fund(codes):
+    """新浪资金净额兜底（元）。口径是「主动买 − 主动卖」，与东财「大单净额」不同，
+    输出时用 * 标记，避免两种口径混作一列。东财限流时至少还有个可用的数。"""
+    out = {}
+    for c in codes:
+        sym = ("sh" if c.startswith("6") else "sz") + c
+        url = ("https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+               f"MoneyFlow.ssi_ssfx_flzjtj?daima={sym}")
+        try:
+            d = json.loads(http_get(url, headers=HDR_SINA, retries=2, timeout=12))
+            v = d.get("netamount")
+            if v is not None:
+                out[c] = float(v)
+        except Exception:
+            pass
+        time.sleep(0.25)
     return out
 
 
@@ -233,9 +264,15 @@ def build():
                            "hy": x.get("hybk") or ""})
 
     candidates.sort(key=lambda r: (-r["lbc"], -r["hs"]))
+    # 只有东财口径参与判定，新浪只作显示兜底：两者量级差近 10 倍，
+    # 混用会把「高开≥+2%」这类门槛抬得过高
     funds = eastmoney_fund([r["code"] for r in candidates]) if candidates else {}
     for r in candidates:
         r["fund"] = funds.get(r["code"])
+    miss = [r["code"] for r in candidates if r["fund"] is None]
+    alt = sina_fund(miss) if miss else {}
+    for r in candidates:
+        r["fund_alt"] = alt.get(r["code"])
 
     basket = build_basket(p_today, p_prev, candidates)
     payload = {"date": d_today, "prev_date": d_prev,
@@ -248,19 +285,29 @@ def build():
         lines.append("| 代码 | 名称 | 身位 | 当日 | 换手 | 主力净额 | 流通 | 竞价观察点 |")
         lines.append("|---|---|---|---|---|---|---|---|")
         missing = 0
+        used_alt = False
         for r in candidates:
-            f = funds.get(r["code"])
-            if f is None:
+            f, fa = r.get("fund"), r.get("fund_alt")
+            if f is not None:
+                fs = f"{f / 1e4:+.0f}万"
+            elif fa is not None:
+                fs = f"{fa / 1e4:+.0f}万*"
+                used_alt = True
+            else:
+                fs = "—"
                 missing += 1
-            fs = "—" if f is None else f"{f / 1e4:+.0f}万"
             lines.append(
                 f"| {r['code']} | {r['name']} | {r['pos']} | {r['chg']:+.2f}% | "
                 f"{r['hs']:.2f}% | {fs} | {r['mcap']:.0f}亿 | "
                 f"{watch_point(f, r['chg'], r['amt'])} |"
             )
+        if used_alt:
+            lines.append("")
+            lines.append("注：带 * 的为新浪「主动买−主动卖」净额，量级比东财「大单净额」大，"
+                         "只用于看方向，不参与观察点计算。")
         if missing:
             lines.append("")
-            lines.append(f"注：{missing} 只未取到主力净额（东财资金接口限流），不影响筛选条件。")
+            lines.append(f"注：{missing} 只资金数据两个源均未取到，不影响筛选条件。")
     else:
         lines.append("今日无符合条件的 2 板及以上断板标的。")
 
@@ -315,7 +362,7 @@ def main():
             print(f"邮件发送失败（不影响主流程）：{e}")
         try:
             from live import push
-            push(f"断板反包名单 {day[4:6]}-{day[6:]}", body)
+            push(f"断板反包池 {day[4:6]}-{day[6:]}（次一交易日竞价用）", body)
         except Exception as e:  # noqa: BLE001
             print(f"推送失败（不影响主流程）：{e}")
 

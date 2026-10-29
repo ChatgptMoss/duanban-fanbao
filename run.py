@@ -19,10 +19,15 @@ BJ = timezone(timedelta(hours=8))
 
 
 def auto_stage():
+    """按实际到达时间选阶段。GitHub cron 只会延后不会提前，所以窗口按「不早于」设计。
+
+    9:30 是竞价阶段的上限：再晚 f[37] 已混入开盘成交量，竞价额就不准了，
+    与其给出错的竞价判定，不如直接跳到承接判定。
+    """
     hm = int(datetime.now(BJ).strftime("%H%M"))
-    if 924 <= hm <= 935:
+    if 920 <= hm <= 930:
         return "auction"
-    if 936 <= hm <= 955:
+    if 931 <= hm <= 955:
         return "confirm"
     return "scan"
 
