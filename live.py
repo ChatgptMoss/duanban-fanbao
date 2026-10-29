@@ -368,7 +368,20 @@ def push(title, body):
                               ensure_ascii=False).encode("utf-8")
             req = urllib.request.Request(url, data=data, headers={
                 "Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=15).read()
+        raw = urllib.request.urlopen(req, timeout=15).read().decode("utf-8", "replace")
+        # Server酱 在 key 错误/额度耗尽时仍返回 HTTP 200，只在 body 里给 code!=0，
+        # 不解析 body 就会把「没送到」当成成功。
+        if "sctapi.ftqq.com" in url:
+            try:
+                code = json.loads(raw).get("code")
+            except Exception:  # noqa: BLE001
+                code = None
+            if code not in (0, None):
+                print(f"推送失败（Server酱 code={code}）：{raw[:200]}")
+            elif code == 0:
+                print("推送成功（Server酱 code=0）")
+        else:
+            print(f"推送成功：{raw[:120]}")
     except Exception as e:  # noqa: BLE001
         print(f"推送失败（不影响输出）：{e}")
 
