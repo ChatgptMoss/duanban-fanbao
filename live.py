@@ -335,55 +335,84 @@ def fmt_date(d):
 
 
 # ---------------------------------------------------------------- push
+def _targets():
+    """收集所有推送地址。支持多个渠道同时推送，任一为空则跳过。
+    WEBHOOK_URL 里也可用逗号分隔填多个地址。"""
+    out, seen = [], set()
+    for key in ("WEBHOOK_URL", "WECOM_WEBHOOK", "DINGTALK_WEBHOOK", "FEISHU_WEBHOOK"):
+        raw = (os.getenv(key) or "").strip()
+        for u in raw.split(","):
+            u = u.strip()
+            if u and u not in seen:
+                seen.add(u)
+                out.append(u)
+    return out
+
+
+def _send_one(url, title, body, text):
+    if "sctapi.ftqq.com" in url:            # Server酱
+        data = urllib.parse.urlencode({"title": title, "desp": body}).encode()
+        req = urllib.request.Request(url, data=data, headers={
+            "Content-Type": "application/x-www-form-urlencoded"})
+    elif "qyapi.weixin.qq.com" in url:      # 企业微信群机器人
+        data = json.dumps({"msgtype": "markdown",
+                           "markdown": {"content": f"**{title}**\n{body}"}},
+                          ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers={
+            "Content-Type": "application/json"})
+    elif "oapi.dingtalk.com" in url:        # 钉钉机器人
+        data = json.dumps({"msgtype": "markdown",
+                           "markdown": {"title": title, "text": f"### {title}\n{body}"}},
+                          ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers={
+            "Content-Type": "application/json"})
+    elif "open.feishu.cn" in url:           # 飞书机器人
+        data = json.dumps({"msg_type": "text",
+                           "content": {"text": f"{title}\n{text}"}},
+                          ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers={
+            "Content-Type": "application/json"})
+    else:
+        data = json.dumps({"text": f"{title}\n{text}"},
+                          ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers={
+            "Content-Type": "application/json"})
+
+    raw = urllib.request.urlopen(req, timeout=15).read().decode("utf-8", "replace")
+    # Server酱 在 key 错误/额度耗尽时仍返回 HTTP 200，只在 body 里给 code!=0，
+    # 不解析 body 就会把「没送到」当成成功。
+    # 企业微信/钉钉同理，errcode 非 0 才算失败。
+    try:
+        j = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        j = {}
+    if "sctapi.ftqq.com" in url:
+        code = j.get("code")
+        if code not in (0, None):
+            raise RuntimeError(f"Server酱 code={code} {raw[:160]}")
+        return "Server酱 code=0"
+    if "qyapi.weixin.qq.com" in url or "oapi.dingtalk.com" in url:
+        code = j.get("errcode")
+        if code not in (0, None):
+            raise RuntimeError(f"errcode={code} {raw[:160]}")
+        return "机器人 errcode=0"
+    return raw[:80]
+
+
 def push(title, body):
-    url = os.getenv("WEBHOOK_URL", "").strip()
-    if not url:
+    urls = _targets()
+    if not urls:
         return
     text = body.replace("**", "")
-    try:
-        if "sctapi.ftqq.com" in url:            # Server酱
-            data = urllib.parse.urlencode({"title": title, "desp": body}).encode()
-            req = urllib.request.Request(url, data=data, headers={
-                "Content-Type": "application/x-www-form-urlencoded"})
-        elif "qyapi.weixin.qq.com" in url:      # 企业微信机器人
-            data = json.dumps({"msgtype": "markdown",
-                               "markdown": {"content": f"**{title}**\n{body}"}},
-                              ensure_ascii=False).encode("utf-8")
-            req = urllib.request.Request(url, data=data, headers={
-                "Content-Type": "application/json"})
-        elif "oapi.dingtalk.com" in url:        # 钉钉机器人
-            data = json.dumps({"msgtype": "markdown",
-                               "markdown": {"title": title, "text": f"### {title}\n{body}"}},
-                              ensure_ascii=False).encode("utf-8")
-            req = urllib.request.Request(url, data=data, headers={
-                "Content-Type": "application/json"})
-        elif "open.feishu.cn" in url:           # 飞书机器人
-            data = json.dumps({"msg_type": "text",
-                               "content": {"text": f"{title}\n{text}"}},
-                              ensure_ascii=False).encode("utf-8")
-            req = urllib.request.Request(url, data=data, headers={
-                "Content-Type": "application/json"})
-        else:
-            data = json.dumps({"text": f"{title}\n{text}"},
-                              ensure_ascii=False).encode("utf-8")
-            req = urllib.request.Request(url, data=data, headers={
-                "Content-Type": "application/json"})
-        raw = urllib.request.urlopen(req, timeout=15).read().decode("utf-8", "replace")
-        # Server酱 在 key 错误/额度耗尽时仍返回 HTTP 200，只在 body 里给 code!=0，
-        # 不解析 body 就会把「没送到」当成成功。
-        if "sctapi.ftqq.com" in url:
-            try:
-                code = json.loads(raw).get("code")
-            except Exception:  # noqa: BLE001
-                code = None
-            if code not in (0, None):
-                print(f"推送失败（Server酱 code={code}）：{raw[:200]}")
-            elif code == 0:
-                print("推送成功（Server酱 code=0）")
-        else:
-            print(f"推送成功：{raw[:120]}")
-    except Exception as e:  # noqa: BLE001
-        print(f"推送失败（不影响输出）：{e}")
+    for url in urls:
+        tag = ("Server酱" if "sctapi.ftqq.com" in url else
+               "企微机器人" if "qyapi.weixin.qq.com" in url else
+               "钉钉" if "oapi.dingtalk.com" in url else
+               "飞书" if "open.feishu.cn" in url else "webhook")
+        try:
+            print(f"推送[{tag}] 成功：{_send_one(url, title, body, text)}")
+        except Exception as e:  # noqa: BLE001
+            print(f"推送[{tag}] 失败（不影响输出）：{e}")
 
 
 def run_stage(stage):
