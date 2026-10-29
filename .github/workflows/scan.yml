@@ -1,20 +1,27 @@
-name: 断板反包名单
+name: 断板反包
 
 on:
   schedule:
-    # GitHub cron 用 UTC。00:30 UTC = 北京时间 08:30，周一至周五
-    - cron: '30 0 * * 1-5'
-  workflow_dispatch:        # 支持手动触发，方便测试
+    # GitHub cron 用 UTC，+8 才是北京时间
+    - cron: '30 0 * * 1-5'   # 08:30 → 盘前名单
+    - cron: '20 1 * * 1-5'   # 09:20 → 竞价判定（脚本会自己等到 9:25 撮合完成）
+    - cron: '38 1 * * 1-5'   # 09:38 → 开盘承接（10 分钟量能 + 真实翻红）
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: 'auto / scan / auction / confirm'
+        required: false
+        default: 'auto'
 
 permissions:
   contents: write
 
 concurrency:
-  group: scan
+  group: duanban
   cancel-in-progress: false
 
 jobs:
-  scan:
+  run:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,19 +30,22 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: 运行筛选
+      - name: 执行
         env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           MAIL_TO:   ${{ secrets.MAIL_TO }}
-        run: python scan.py
+        run: python run.py ${{ github.event.inputs.stage || 'auto' }}
 
       - name: 提交结果
+        if: always()
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add out/latest.md
-          git diff --cached --quiet || git commit -m "scan: $(date -u +%Y-%m-%d)"
-          git push
+          git add out/ || true
+          git diff --cached --quiet || git commit -m "run: $(TZ=Asia/Shanghai date +%m-%d\ %H:%M)"
+          git pull --rebase --quiet || true
+          git push || true

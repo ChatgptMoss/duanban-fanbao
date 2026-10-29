@@ -176,10 +176,27 @@ def watch_point(fund, chg, amt):
     return f"{mood}｜竞价额≥{vol_s}亿"
 
 
+def build_basket(p_today, p_prev, candidates):
+    """主线篮子 = 前一交易日涨停池中，与候选股同行业的股票。
+
+    只取 p_prev 不取 p_today：当日新涨停的股次日竞价天然高开，混进来会把
+    「板块温度」算虚高。要看的其实是「昨天同板块一起涨停的，今天还有几只被接住」。
+    """
+    hys = {r["hy"] for r in candidates if r.get("hy")}
+    seen = {}
+    for x in (p_prev or {}).get("pool") or []:
+        h = x.get("hybk") or ""
+        if h in hys:
+            seen[x["c"]] = (x["n"], h)
+    for r in candidates:
+        seen[r["code"]] = (r["name"], r.get("hy") or "")
+    return [{"code": c, "name": n, "hy": h} for c, (n, h) in seen.items()]
+
+
 def build():
     days = resolve_days()
     if not days:
-        return "数据获取失败：涨停池接口无返回，请检查网络或接口变更。", None
+        return "数据获取失败：涨停池接口无返回，请检查网络或接口变更。", None, []
     d_today, p_today, d_prev, p_prev = days
 
     today_codes = {x["c"] for x in p_today.get("pool") or []}
@@ -212,10 +229,17 @@ def build():
         pos = f"{lbc}板→{lbc + 1}板炸" if code in zb_codes else f"{lbc}板断"
         candidates.append({"code": code, "name": name, "pos": pos,
                            "chg": q["chg"], "hs": q["hs"], "amt": q["amt"],
-                           "mcap": q["mcap"], "lbc": lbc})
+                           "mcap": q["mcap"], "lbc": lbc,
+                           "hy": x.get("hybk") or ""})
 
     candidates.sort(key=lambda r: (-r["lbc"], -r["hs"]))
     funds = eastmoney_fund([r["code"] for r in candidates]) if candidates else {}
+    for r in candidates:
+        r["fund"] = funds.get(r["code"])
+
+    basket = build_basket(p_today, p_prev, candidates)
+    payload = {"date": d_today, "prev_date": d_prev,
+               "candidates": candidates, "basket": basket}
 
     lines = [f"**数据基准：{d_today[:4]}-{d_today[4:6]}-{d_today[6:]} 收盘"
              f"（对比前一交易日 {d_prev[:4]}-{d_prev[4:6]}-{d_prev[6:]}）**", ""]
@@ -245,7 +269,7 @@ def build():
         reasons = "；".join(f"{n}（{why}）" for _, n, why in row_notes)
         lines.append(f"剔除：{reasons}")
 
-    return "\n".join(lines), d_today
+    return "\n".join(lines), d_today, payload
 
 
 def send_mail(subject, body):
@@ -270,12 +294,14 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
-    body, day = build()
+    body, day, payload = build()
     print(body)
 
     os.makedirs(OUT_DIR, exist_ok=True)
     with open(OUT_FILE, "w", encoding="utf-8") as fh:
         fh.write(body + "\n")
+    with open(os.path.join(OUT_DIR, "candidates.json"), "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=1)
 
     summary = os.getenv("GITHUB_STEP_SUMMARY")
     if summary:
@@ -287,6 +313,11 @@ def main():
             send_mail(f"断板反包名单 {day[:4]}-{day[4:6]}-{day[6:]}", body)
         except Exception as e:  # noqa: BLE001
             print(f"邮件发送失败（不影响主流程）：{e}")
+        try:
+            from live import push
+            push(f"断板反包名单 {day[4:6]}-{day[6:]}", body)
+        except Exception as e:  # noqa: BLE001
+            print(f"推送失败（不影响主流程）：{e}")
 
 
 if __name__ == "__main__":

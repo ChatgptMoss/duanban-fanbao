@@ -1,83 +1,77 @@
-# 断板反包名单（2 板及以上）
+# 断板反包 · 每日名单与盘中判定
 
-每个交易日北京时间 **08:30** 自动跑一次，输出前一交易日收盘后符合条件的断板股，供 **9:25 集合竞价**决策。
+A 股 2 板及以上断板股的盘前筛选，以及次日竞价的实时判定。
 
-## 输出示例
+## 三个时间点
 
-```
-**数据基准：2026-10-29 收盘（对比前一交易日 2026-10-28）**
+| 北京时间 | 阶段 | 内容 |
+|---|---|---|
+| 08:30 | `scan` | 盘前名单：2 板及以上断板、主板、换手 ≥10%、跌幅 ≥ -5% |
+| 09:26 | `auction` | 竞价判定：竞价涨幅、竞价额占昨日成交额比、板块竞价翻红数 |
+| 09:41 | `confirm` | 承接判定：开盘后 10 分钟成交额、板块真实翻红家数、最终结论 |
 
-| 代码 | 名称 | 身位 | 当日 | 换手 | 主力净额 | 流通 | 竞价观察点 |
-|---|---|---|---|---|---|---|---|
-| 000678 | 襄阳轴承 | 5板→6板炸 | +6.47% | 41.93% | +8136万 | 86亿 | 高开≥+2%且9:20后不撤单｜竞价额≥0.74亿 |
-| 001400 | 江顺科技 | 2板→3板炸 | +4.36% | 25.23% | +1035万 | 30亿 | 高开≥+2%且9:20后不撤单｜竞价额≥0.15亿 |
-| 603037 | 凯众股份 | 2板断 | -2.22% | 18.05% | -1807万 | 34亿 | 主力净流出，需翻红才看｜竞价额≥0.13亿 |
+竞价阶段会在 9:15–9:25 之间自动等到 9:25:20 再取数，避免拿到未撮合的意向量。
 
-剔除：茂业商业（换手 7.66% 不足）
-```
+## 三条判定条件
 
-## 筛选口径
+1. 竞价涨幅 ≥ -3%（`CHG_FLOOR`）
+2. 开盘后 10 分钟成交额 ≥ 3 亿（`AMT_NEED`）
+3. 同板块昨日涨停股中 ≥2 只翻红（`BREADTH_NEED`）
 
-1. 前一交易日涨停池中 **连板数 ≥ 2** 的股票，减去当日涨停池 → 断板（剔除首板一进二）
-2. 只保留主板：60 / 00 开头，剔除 688、300、301、920
-3. 当日换手率 ≥ 10%
-4. 当日涨跌幅 ≥ -5%
-5. 只看当日断板，不做跨日跟踪
+三条全满足才出「可进」。
 
 ## 数据源
 
-| 用途 | 接口 |
-|---|---|
-| 交易日历 | 腾讯日K（`web.ifzq.gtimg.cn`），东财日K 兜底 |
-| 涨停池 / 炸板池 | `push2ex.eastmoney.com/getTopicZTPool` / `getTopicZBPool` |
-| 换手率 / 涨跌幅 / 流通市值 | 腾讯行情（`qt.gtimg.cn`） |
-| 主力净额 | 东财 `push2his.eastmoney.com/api/qt/ulist.np/get`（f62） |
-
-全部用标准库实现，无需 `pip install`。
+- 涨停池 / 炸板池：东方财富 `push2ex.eastmoney.com`
+- 实时行情：腾讯 `qt.gtimg.cn`（GBK）。东财 `push2` 对部分 IP 有间歇限流，故不作主源
+- 交易日历：腾讯上证指数日 K，盘前运行自然落在上一交易日，节假日自动跳过
 
 ## 部署
 
-1. 在 GitHub 新建一个**空仓库**（不要勾选 Add README），名字随意，比如 `duanban-fanbao`
-2. 在本目录执行：
+1. GitHub 新建空仓库 `duanban-fanbao`（不要勾选 README / .gitignore / license）
+
+2. 推送：
 
 ```bash
-git remote add origin https://github.com/<你的用户名>/duanban-fanbao.git
-git branch -M main
+git remote add origin https://github.com/<用户名>/duanban-fanbao.git
 git push -u origin main
 ```
 
-3. 打开仓库 → **Actions** 标签页 → 左侧「断板反包名单」→ 右侧 **Run workflow** 手动跑一次，确认能出结果
-4. 之后每个交易日 08:30 自动运行
+3. Settings → Secrets and variables → Actions，添加 `WEBHOOK_URL`：
 
-## 查看结果
-
-三种方式，任选：
-
-- **Actions 页面**：每次运行的 Summary 里直接显示表格（手机端 GitHub App 也能看）
-- **仓库文件**：`out/latest.md` 每次运行后自动更新
-- **邮件推送**（可选）：在仓库 Settings → Secrets and variables → Actions 里加这 5 个 secret，就会同时发邮件
-
-| Secret | 说明 |
+| 渠道 | URL 形态 |
 |---|---|
-| `SMTP_HOST` | 如 `smtp.qq.com` |
-| `SMTP_PORT` | 如 `465` |
-| `SMTP_USER` | 发件邮箱 |
-| `SMTP_PASS` | 邮箱授权码（不是登录密码） |
-| `MAIL_TO` | 收件邮箱 |
+| 企业微信机器人 | `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...` |
+| Server酱 | `https://sctapi.ftqq.com/<SendKey>.send` |
+| 钉钉机器人 | `https://oapi.dingtalk.com/robot/send?access_token=...` |
+| 飞书机器人 | `https://open.feishu.cn/open-apis/bot/v2/hook/...` |
 
-QQ 邮箱授权码在「设置 → 账号 → POP3/SMTP 服务」里开启后获取。
+按域名自动识别，不用额外配类型。不填则只写文件、不推送。
 
-## 注意事项
+4. Actions → 断板反包 → Run workflow，`stage` 填 `scan` 先试一次。
 
-- **cron 是 UTC 时间**。`30 0 * * 1-5` = 北京时间 08:30。GitHub 的定时任务可能延迟 5–15 分钟，08:45 前基本都能拿到。
-- **仓库 60 天无提交，GitHub 会自动停用定时任务**。本流程每天会提交 `out/latest.md`，正常不会触发；如果长期没跑，去 Actions 页面点一次 Enable 即可。
-- **节假日**：脚本用真实交易日历取「最近交易日」，所以长假期间跑出来的仍是节前最后一个交易日的数据，不会报错，但内容会和前一天重复。
-- **主力净额显示「—」**：东财资金接口偶发限流，不影响筛选条件（只有换手率和涨跌幅是硬门槛）。
+## 关于准点
 
-## 本地运行
+GitHub 的 cron 不保证准点，高峰期会延迟十几分钟，9:20 那次可能拖到 9:35 之后，竞价窗口就错过了。
+
+`run.py` 会按实际到达时间自动选阶段，错过 auction 就直接跑 confirm，不会跑错。但想要准点推送，建议用下面任一种外部触发：
+
+- **cron-job.org**（免费）：定时 `POST /repos/<owner>/<repo>/actions/workflows/scan.yml/dispatches`，body `{"ref":"main","inputs":{"stage":"auction"}}`，需要带 `workflow` 权限的 PAT
+- **本地计划任务**：电脑 9:15 前必开，直接 `python run.py auction`，秒级准点
+
+## 手动运行
 
 ```bash
-python scan.py
+python run.py            # 按当前时间自动选
+python run.py scan
+python run.py auction
+python run.py confirm
 ```
 
-结果同时打印到终端并写入 `out/latest.md`。
+仅依赖 Python 标准库，无需 `pip install`。
+
+## 输出
+
+- `out/latest.md` —— 盘前名单
+- `out/candidates.json` —— 名单的机器可读版，供竞价阶段读取
+- `out/auction_cache.json` —— 9:25 竞价快照，供 9:41 计算开盘后成交额
