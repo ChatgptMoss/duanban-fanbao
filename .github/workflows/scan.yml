@@ -1,0 +1,41 @@
+name: 断板反包名单
+
+on:
+  schedule:
+    # GitHub cron 用 UTC。00:30 UTC = 北京时间 08:30，周一至周五
+    - cron: '30 0 * * 1-5'
+  workflow_dispatch:        # 支持手动触发，方便测试
+
+permissions:
+  contents: write
+
+concurrency:
+  group: scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 运行筛选
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          MAIL_TO:   ${{ secrets.MAIL_TO }}
+        run: python scan.py
+
+      - name: 提交结果
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add out/latest.md
+          git diff --cached --quiet || git commit -m "scan: $(date -u +%Y-%m-%d)"
+          git push
