@@ -12,8 +12,8 @@
    "mcap": 58.28,
    "lbc": 3,
    "hy": "通用设备",
-   "fund": -108580647.0,
-   "fund_alt": null
+   "fund": null,
+   "fund_alt": 264682699.88
   },
   {
    "code": "003032",
@@ -25,8 +25,8 @@
    "mcap": 27.22,
    "lbc": 2,
    "hy": "教育",
-   "fund": 4163217.0,
-   "fund_alt": null
+   "fund": null,
+   "fund_alt": -53649845.34
   },
   {
    "code": "603703",
@@ -38,8 +38,8 @@
    "mcap": 48.72,
    "lbc": 2,
    "hy": "光学光电",
-   "fund": -324116804.0,
-   "fund_alt": null
+   "fund": null,
+   "fund_alt": 259608657.59
   }
  ],
  "basket": [
