@@ -6,11 +6,27 @@ A 股 2 板及以上断板股的盘前筛选，以及次日竞价的实时判定
 
 | 北京时间 | 阶段 | 内容 |
 |---|---|---|
-| 08:30 | `scan` | 盘前名单：2 板及以上断板、主板、换手 ≥10%、跌幅 ≥ -5% |
-| 09:26 | `auction` | 竞价判定：竞价涨幅、竞价额占昨日成交额比、板块竞价翻红数 |
-| 09:41 | `confirm` | 承接判定：开盘后 10 分钟成交额、板块真实翻红家数、最终结论 |
+| 21:30 | `scan` | 断板反包池：2 板及以上断板、主板、换手 ≥10%、跌幅 ≥ -5%，标龙位 |
+| 09:25 | `auction` | 竞价判定：竞价涨幅、竞价额占昨日成交额比、板块竞价翻红数 |
+| 09:40 | `confirm` | 承接判定：开盘后 10 分钟成交额、板块真实翻红家数、最终结论 |
+
+名单放在晚上算，不跟竞价抢时间，允许重试；9:25 那次只读现成名单，一次 HTTP 请求。
 
 竞价阶段会在 9:15–9:25 之间自动等到 9:25:20 再取数，避免拿到未撮合的意向量。
+
+## 龙位口径
+
+断板池按「龙头优先级」排序并标注龙 N：
+
+```
+连板高度高 → 首封时间早 → 封单大 → 炸板次数少
+```
+
+即游资通用口径：高度定龙头；高度相同看谁先封死；再同看封单与封板质量。
+
+- `龙1` = 池内优先级最高的那只，依次龙 2、龙 3
+- `龙1·3` = 池内第 1，且所属板块当日涨停 3 只（有梯队）
+- 不带后缀 = 所属板块当日只有它 1 只涨停，属于独苗，没有带动性
 
 ## 三条判定条件
 
@@ -37,16 +53,16 @@ git remote add origin https://github.com/<用户名>/duanban-fanbao.git
 git push -u origin main
 ```
 
-3. Settings → Secrets and variables → Actions，添加 `WEBHOOK_URL`：
+3. Settings → Secrets and variables → Actions，添加推送地址（可多选，配了哪个就推哪个）：
 
-| 渠道 | URL 形态 |
-|---|---|
-| 企业微信机器人 | `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...` |
-| Server酱 | `https://sctapi.ftqq.com/<SendKey>.send` |
-| 钉钉机器人 | `https://oapi.dingtalk.com/robot/send?access_token=...` |
-| 飞书机器人 | `https://open.feishu.cn/open-apis/bot/v2/hook/...` |
+| Secret 名 | 渠道 | URL 形态 |
+|---|---|---|
+| `WEBHOOK_URL` | 企业微信机器人 / Server酱 / 钉钉 / 飞书 | 见下表 |
+| `WECOM_WEBHOOK` | 企业微信群机器人 | `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...` |
+| `DINGTALK_WEBHOOK` | 钉钉机器人 | `https://oapi.dingtalk.com/robot/send?access_token=...` |
+| `FEISHU_WEBHOOK` | 飞书机器人 | `https://open.feishu.cn/open-apis/bot/v2/hook/...` |
 
-按域名自动识别，不用额外配类型。不填则只写文件、不推送。
+`WEBHOOK_URL` 支持按域名自动识别，也可用逗号分隔填多个地址；其余三个是等价的显式别名。全部不填则只写文件、不推送。
 
 4. Actions → 断板反包 → Run workflow，`stage` 填 `scan` 先试一次。
 
