@@ -194,17 +194,59 @@ def sina_fund(codes):
     return out
 
 
+def vol_gate(amt):
+    """竞价额门槛：昨日成交额 2%，不足 0.1 亿按 0.1 亿"""
+    vol = amt * 0.02
+    return f"{vol:.2f}".rstrip("0").rstrip(".") if vol >= 0.1 else "0.1"
+
+
 def watch_point(fund, chg, amt):
-    """生成竞价观察点"""
+    """生成竞价观察点（完整版，给仓库和 Summary）"""
     if fund is None:
         mood = "高开≥+1%" if chg >= 3 else ("-1%~+3% 正常" if chg >= 0 else "需翻红")
     elif fund > 0:
         mood = "高开≥+2%且9:20后不撤单" if chg >= 3 else "-1%~+3% 属正常"
     else:
         mood = "主力净流出，需翻红才看"
-    vol = amt * 0.02
-    vol_s = f"{vol:.2f}".rstrip("0").rstrip(".") if vol >= 0.1 else "0.1"
-    return f"{mood}｜竞价额≥{vol_s}亿"
+    return f"{mood}｜竞价额≥{vol_gate(amt)}亿"
+
+
+def slim_watch(fund, chg, amt):
+    """紧凑版，给手机截图用：高开要求 + 竞价额门槛"""
+    if fund is None:
+        mood = "≥+1%" if chg >= 3 else ("-1~+3%" if chg >= 0 else "需翻红")
+    elif fund > 0:
+        mood = "≥+2%" if chg >= 3 else "-1~+3%"
+    else:
+        mood = "需翻红"
+    return f"{mood}·{vol_gate(amt)}亿"
+
+
+def dragon_ranks(p_prev, candidates):
+    """给断板池按「龙头优先级」排序，返回 code -> (序号, 所属板块当日涨停家数)。
+
+    排序口径（游资通用，取其中可量化的部分）：
+      连板高度高 → 首封时间早 → 封单大 → 炸板少
+    即：高度定龙头；高度相同看谁先封死；再同看封单与封板质量。
+
+    序号是「这批断板股里的龙头次序」，不是全市场排名。
+    家数用来区分有梯队的真龙（≥2）和板块独苗（1）——独苗没有带动性，
+    是典型的「假龙头：只有自己涨、板块不动」。
+    """
+    pool = (p_prev or {}).get("pool") or []
+    hy_n = {}
+    for x in pool:
+        hy = x.get("hybk") or ""
+        hy_n[hy] = hy_n.get(hy, 0) + 1
+
+    src = {x["c"]: x for x in pool}
+    ordered = sorted(
+        [src[r["code"]] for r in candidates if r["code"] in src],
+        key=lambda a: (-(a.get("lbc") or 0), a.get("fbt") or "99:99",
+                       -(a.get("fund") or 0), a.get("zbc") or 0),
+    )
+    return {x["c"]: (i, hy_n.get(x.get("hybk") or "", 1))
+            for i, x in enumerate(ordered, 1)}
 
 
 def build_basket(p_today, p_prev, candidates):
@@ -263,7 +305,11 @@ def build():
                            "mcap": q["mcap"], "lbc": lbc,
                            "hy": x.get("hybk") or ""})
 
-    candidates.sort(key=lambda r: (-r["lbc"], -r["hs"]))
+    ranks = dragon_ranks(p_prev, candidates)
+    for r in candidates:
+        r["dragon"], r["hy_n"] = ranks.get(r["code"], (None, None))
+    # 龙位即排序依据：龙1 永远在最前面
+    candidates.sort(key=lambda r: (r["dragon"] or 99, -r["lbc"], -r["hs"]))
     # 只有东财口径参与判定，新浪只作显示兜底：两者量级差近 10 倍，
     # 混用会把「高开≥+2%」这类门槛抬得过高
     funds = eastmoney_fund([r["code"] for r in candidates]) if candidates else {}
@@ -281,9 +327,13 @@ def build():
     lines = [f"**数据基准：{d_today[:4]}-{d_today[4:6]}-{d_today[6:]} 收盘"
              f"（对比前一交易日 {d_prev[:4]}-{d_prev[4:6]}-{d_prev[6:]}）**", ""]
 
+    slim = [f"**断板反包 {d_today[4:6]}-{d_today[6:]}｜基准 {d_prev[4:6]}-{d_prev[6:]}**", ""]
+
     if candidates:
-        lines.append("| 代码 | 名称 | 身位 | 当日 | 换手 | 主力净额 | 流通 | 竞价观察点 |")
-        lines.append("|---|---|---|---|---|---|---|---|")
+        lines.append("| 龙位 | 代码 | 名称 | 身位 | 当日 | 换手 | 主力净额 | 流通 | 竞价观察点 |")
+        lines.append("|---|---|---|---|---|---|---|---|---|")
+        slim.append("| 龙位 | 代码 | 名称 | 身位·换手 | 竞价 |")
+        slim.append("|---|---|---|---|---|")
         missing = 0
         used_alt = False
         for r in candidates:
@@ -296,10 +346,19 @@ def build():
             else:
                 fs = "—"
                 missing += 1
+            dp = "—"
+            if r.get("dragon"):
+                dp = f"龙{r['dragon']}"
+                if (r.get("hy_n") or 1) >= 2:      # 有梯队才标家数，独苗不占位
+                    dp += f"·{r['hy_n']}"
             lines.append(
-                f"| {r['code']} | {r['name']} | {r['pos']} | {r['chg']:+.2f}% | "
+                f"| {dp} | {r['code']} | {r['name']} | {r['pos']} | {r['chg']:+.2f}% | "
                 f"{r['hs']:.2f}% | {fs} | {r['mcap']:.0f}亿 | "
                 f"{watch_point(f, r['chg'], r['amt'])} |"
+            )
+            slim.append(
+                f"| {dp} | {r['code']} | {r['name']} | {r['pos']}·{r['hs']:.0f}% | "
+                f"{slim_watch(f, r['chg'], r['amt'])} |"
             )
         if used_alt:
             lines.append("")
@@ -310,12 +369,19 @@ def build():
             lines.append(f"注：{missing} 只资金数据两个源均未取到，不影响筛选条件。")
     else:
         lines.append("今日无符合条件的 2 板及以上断板标的。")
+        slim.append("今日无符合条件标的")
 
     if row_notes:
         lines.append("")
         reasons = "；".join(f"{n}（{why}）" for _, n, why in row_notes)
         lines.append(f"剔除：{reasons}")
 
+    if candidates:
+        slim.append("")
+        slim.append("龙N＝池内次序｜龙N·M＝所属板块当日涨停M只")
+        slim.append("排序：连板高→首封早→封单大→炸板少")
+
+    payload["slim"] = "\n".join(slim)
     return "\n".join(lines), d_today, payload
 
 
@@ -362,7 +428,8 @@ def main():
             print(f"邮件发送失败（不影响主流程）：{e}")
         try:
             from live import push
-            push(f"断板反包池 {day[4:6]}-{day[6:]}（次一交易日竞价用）", body)
+            # 手机端推紧凑版（一屏可截图），完整版留在 out/latest.md 与 Summary
+            push(f"断板反包 {day[4:6]}-{day[6:]}", payload.get("slim") or body)
         except Exception as e:  # noqa: BLE001
             print(f"推送失败（不影响主流程）：{e}")
 
